@@ -3,62 +3,63 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live S3 & Cloudinary Migrator</title>
+    <title>Stable Migrator</title>
     <style>
         body { font-family: Arial, sans-serif; background-color: #f4f7f6; text-align: center; padding: 30px; }
         .card { background: white; max-width: 800px; margin: auto; padding: 25px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        button { background: #007bff; color: white; border: none; padding: 15px 35px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 15px; }
-        button:hover { background: #0056b3; }
-        #logBox { margin-top: 20px; height: 350px; background: #1e1e1e; color: #00ff00; text-align: left; padding: 15px; border-radius: 5px; overflow-y: scroll; font-family: monospace; font-size: 14px; }
+        button { background: #28a745; color: white; border: none; padding: 15px 35px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 15px; }
+        button:hover { background: #218838; }
+        #logBox { margin-top: 20px; height: 350px; background: #1e1e1e; color: #00ff00; text-align: left; padding: 15px; border-radius: 5px; overflow-y: scroll; font-family: monospace; font-size: 13px; }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>लाइव इमेज माइग्रेशन और अपडेट टूल</h2>
-    <p>स्टार्ट बटन दबाते ही हर एक स्टेप स्क्रीन पर लाइव दिखने लगेगा कि कौन सी इमेज अपलोड हो रही है और कौन सी लिस्टिंग अपडेट हो रही है।</p>
+    <h2>इमेज माइग्रेशन और अपडेट टूल</h2>
+    <p>स्टार्ट बटन दबाने के बाद नीचे कंसोल में लाइव प्रोग्रेस दिखेगी।</p>
     
     <button id="startBtn">स्टार्ट माइग्रेशन (Start)</button>
     
-    <div id="logBox">लॉग्स (Logs) यहाँ लाइव दिखेंगे...</div>
+    <div id="logBox">[SYSTEM] तैयार है। स्टार्ट बटन दबाएं...</div>
 </div>
 
 <script>
     const startBtn = document.getElementById('startBtn');
     const logBox = document.getElementById('logBox');
-    let ws;
-
-    function connectWs() {
-        let proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        ws = new WebSocket(proto + window.location.host + '/ws');
-
-        ws.onopen = function() {
-            logBox.innerHTML += "<div>[SYSTEM] सर्वर से कनेक्शन जुड़ गया है।</div>";
-        };
-
-        ws.onmessage = function(event) {
-            logBox.innerHTML += `<div>${event.data}</div>`;
-            logBox.scrollTop = logBox.scrollHeight; // ऑटो-स्क्रॉल नीचे की तरफ
-        };
-
-        ws.onclose = function() {
-            logBox.innerHTML += "<div>[SYSTEM] कनेक्शन बंद हो गया।</div>";
-        };
-    }
-
-    connectWs();
+    let pollInterval;
 
     startBtn.onclick = function() {
-        if(ws && ws.readyState === WebSocket.OPEN) {
-            logBox.innerHTML = ""; // पुराना लॉग साफ़ करें
-            ws.send("start");
-            startBtn.disabled = true;
-            startBtn.style.background = '#6c757d';
-            startBtn.textContent = "प्रक्रिया चालू है...";
-        } else {
-            alert("सर्वर से कनेक्शन नहीं है, पेज रीफ्रेश करें!");
-        }
+        startBtn.disabled = true;
+        startBtn.style.background = '#6c757d';
+        startBtn.textContent = "प्रक्रिया जारी है...";
+
+        fetch('/api/start', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                pollInterval = setInterval(fetchLogs, 2000); // Har 2 second mein logs fetch karega
+            })
+            .catch(err => {
+                alert("कनेक्शन एरर!");
+                startBtn.disabled = false;
+                startBtn.style.background = '#28a745';
+            });
     };
+
+    function fetchLogs() {
+        fetch('/api/logs')
+            .then(res => res.json())
+            .then(data => {
+                logBox.innerHTML = data.logs.join('<br>');
+                logBox.scrollTop = logBox.scrollHeight;
+
+                if (data.status === 'Completed' || data.status === 'Error') {
+                    clearInterval(pollInterval);
+                    startBtn.disabled = false;
+                    startBtn.style.background = '#28a745';
+                    startBtn.textContent = "स्टार्ट माइग्रेशन (Start)";
+                }
+            });
+    }
 </script>
 
 </body>
