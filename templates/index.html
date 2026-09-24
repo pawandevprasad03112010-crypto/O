@@ -3,65 +3,63 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FastAPI S3 & Cloudinary Migrator</title>
+    <title>Live S3 & Cloudinary Migrator</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #eef2f7; text-align: center; padding: 50px; }
-        .card { background: white; max-width: 600px; margin: auto; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        h2 { color: #333; }
-        button { background: #28a745; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 20px; }
-        button:hover { background: #218838; }
-        .status-box { margin-top: 25px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; font-weight: bold; }
+        body { font-family: Arial, sans-serif; background-color: #f4f7f6; text-align: center; padding: 30px; }
+        .card { background: white; max-width: 800px; margin: auto; padding: 25px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        button { background: #007bff; color: white; border: none; padding: 15px 35px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 15px; }
+        button:hover { background: #0056b3; }
+        #logBox { margin-top: 20px; height: 350px; background: #1e1e1e; color: #00ff00; text-align: left; padding: 15px; border-radius: 5px; overflow-y: scroll; font-family: monospace; font-size: 14px; }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>FastAPI इमेज माइग्रेशन टूल</h2>
-    <p>कोलकाता लिस्टिंग्स को तेज़ी से अपडेट करने के लिए नीचे दिए गए बटन पर क्लिक करें।</p>
+    <h2>लाइव इमेज माइग्रेशन और अपडेट टूल</h2>
+    <p>स्टार्ट बटन दबाते ही हर एक स्टेप स्क्रीन पर लाइव दिखने लगेगा कि कौन सी इमेज अपलोड हो रही है और कौन सी लिस्टिंग अपडेट हो रही है।</p>
     
-    <button id="startBtn">स्टार्ट करें (Start Migration)</button>
+    <button id="startBtn">स्टार्ट माइग्रेशन (Start)</button>
     
-    <div class="status-box" id="statusBox">स्थिति: तैयार (Idle)</div>
+    <div id="logBox">लॉग्स (Logs) यहाँ लाइव दिखेंगे...</div>
 </div>
 
 <script>
     const startBtn = document.getElementById('startBtn');
-    const statusBox = document.getElementById('statusBox');
+    const logBox = document.getElementById('logBox');
+    let ws;
+
+    function connectWs() {
+        let proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        ws = new WebSocket(proto + window.location.host + '/ws');
+
+        ws.onopen = function() {
+            logBox.innerHTML += "<div>[SYSTEM] सर्वर से कनेक्शन जुड़ गया है।</div>";
+        };
+
+        ws.onmessage = function(event) {
+            logBox.innerHTML += `<div>${event.data}</div>`;
+            logBox.scrollTop = logBox.scrollHeight; // ऑटो-स्क्रॉल नीचे की तरफ
+        };
+
+        ws.onclose = function() {
+            logBox.innerHTML += "<div>[SYSTEM] कनेक्शन बंद हो गया।</div>";
+        };
+    }
+
+    connectWs();
 
     startBtn.onclick = function() {
-        startBtn.disabled = true;
-        startBtn.style.background = '#6c757d';
-        statusBox.textContent = "स्थिति: अनुरोध भेजा जा रहा है...";
-
-        fetch('/api/start-migration', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                statusBox.textContent = "स्थिति: " + data.message;
-                pollStatus();
-            })
-            .catch(err => {
-                statusBox.textContent = "एरर आ गया: " + err;
-                startBtn.disabled = false;
-                startBtn.style.background = '#28a745';
-            });
+        if(ws && ws.readyState === WebSocket.OPEN) {
+            logBox.innerHTML = ""; // पुराना लॉग साफ़ करें
+            ws.send("start");
+            startBtn.disabled = true;
+            startBtn.style.background = '#6c757d';
+            startBtn.textContent = "प्रक्रिया चालू है...";
+        } else {
+            alert("सर्वर से कनेक्शन नहीं है, पेज रीफ्रेश करें!");
+        }
     };
-
-    function pollStatus() {
-        const interval = setInterval(() => {
-            fetch('/api/status')
-                .then(res => res.json())
-                .then(data => {
-                    statusBox.textContent = "स्थिति (" + data.status + "): " + data.message;
-                    if (data.status === 'Completed' || data.status === 'Error') {
-                        clearInterval(interval);
-                        startBtn.disabled = false;
-                        startBtn.style.background = '#28a745';
-                    }
-                });
-        }, 3000);
-    }
 </script>
 
 </body>
 </html>
-
