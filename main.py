@@ -1,12 +1,11 @@
 import io
 import asyncio
-import json
 import boto3
 import cloudinary
 import cloudinary.api
 import cloudinary.uploader
 import requests
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
@@ -47,44 +46,23 @@ dynamodb = boto3.resource(
 )
 table = dynamodb.Table(TABLE_NAME)
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
+migration_progress = {
+    "status": "Idle",
+    "logs": []
+}
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
+def add_log(msg: str):
+    migration_progress["logs"].append(msg)
+    if len(migration_progress["logs"]) > 100:
+        migration_progress["logs"].pop(0)
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except:
-                pass
-
-manager = ConnectionManager()
-
-@app.get("/", response_class=HTMLResponse)
-def read_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+def run_migration_task():
+    global migration_progress
+    migration_progress["status"] = "Running"
+    migration_progress["logs"] = []
+    
     try:
-        while True:
-            data = await websocket.receive_text()
-            if data == "start":
-                asyncio.create_task(run_migration(manager))
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-
-async def run_migration(mgr: ConnectionManager):
-    try:
-        await mgr.broadcast("🔄 क्लाउडिनेरी से सभी इमेजेस फेच की जा रही हैं...")
+        add_log("🔄 क्लाउडिनेरी से सभी इमेजेस फेच की जा रही हैं...")
         
         resources = []
         next_cursor = None
@@ -106,7 +84,7 @@ async def run_migration(mgr: ConnectionManager):
         else:
             resources_to_upload = []
 
-        await mgr.broadcast(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर {len(resources_to_upload)} इमेजेस S3 पर अपलोड होना शुरू हो रही हैं...")
+        add_log(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर {len(resources_to_upload)} इमेजेस S3 पर अपलोड हो रही हैं...")
         
         s3_uploaded_urls = []
         for i, res in enumerate(resources_to_upload):
@@ -123,13 +101,12 @@ async def run_migration(mgr: ConnectionManager):
                     new_s3_url = f"https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{s3_key}"
                     s3_uploaded_urls.append(new_s3_url)
                     
-                    # Live screen par dikhane ke liye
-                    if (i + 1) % 5 == 0 or (i + 1) == len(resources_to_upload):
-                        await mgr.broadcast(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)}): {new_s3_url}")
-            except Exception as e:
+                    if (i + 1) % 10 == 0 or (i + 1) == len(resources_to_upload):
+                        add_log(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)})")
+            except Exception:
                 continue
 
-        await mgr.broadcast("🔍 DynamoDB से कोलकाता लोकेशन की लिस्टिंग्स जांची जा रही हैं...")
+        add_log("🔍 DynamoDB से कोलकाता लोकेशन की लिस्टिंग्स जांची जा रही हैं...")
         response = table.scan()
         items = response.get("Items", [])
         while "LastEvaluatedKey" in response:
@@ -144,7 +121,7 @@ async def run_migration(mgr: ConnectionManager):
             if "kolkata" in city or "kolkata" in sub_loc:
                 kolkata_items.append(item)
 
-        await mgr.broadcast(f"📍 कोलकाता की कुल {len(kolkata_items)} लिस्टिंग्स मिलीं। अब नियम चेक करके अपडेट कर रहे हैं...")
+        add_log(f"📍 कोलकाता की कुल {len(kolkata_items)} लिस्टिंग्स मिलीं। अपडेट जारी है...")
 
         url_index = 0
         updated_count = 0
@@ -160,7 +137,7 @@ async def run_migration(mgr: ConnectionManager):
                 continue
 
             if url_index >= total_s3_urls:
-                await mgr.broadcast("⚠️ सभी नई S3 इमेजेस समाप्त हो चुकी हैं।")
+                add_log("⚠️ सभी नई S3 इमेजेस समाप्त हो चुकी हैं।")
                 break
 
             batch_size = 5
@@ -184,10 +161,27 @@ async def run_migration(mgr: ConnectionManager):
                 ExpressionAttributeValues={":new_images": new_images}
             )
             updated_count += 1
-            await mgr.broadcast(f"✨ Updated Property ID: {property_id} (5 S3 URLs added)")
+            add_log(f"✨ Updated ID: {property_id}")
 
-        await mgr.broadcast(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स को अपडेट कर दिया गया है।")
+        migration_progress["status"] = "Completed"
+        add_log(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स अपडेट कर दी गई हैं।")
 
     except Exception as e:
-        await mgr.broadcast(f"❌ एरर आ गया: {str(e)}")
-        
+        migration_progress["status"] = "Error"
+        add_log(f"❌ एरर आ गया: {str(e)}")
+
+@app.get("/", response_class=HTMLResponse)
+def read_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.post("/api/start")
+def start_migration(background_tasks: BackgroundTasks):
+    if migration_progress["status"] == "Running":
+        return {"message": "पहले से चल रहा है..."}
+    background_tasks.add_task(run_migration_task)
+    return {"message": "शुरू हो गया!"}
+
+@app.get("/api/logs")
+def get_logs():
+    return migration_progress
+    
