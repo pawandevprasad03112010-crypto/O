@@ -53,7 +53,7 @@ migration_progress = {
 
 def add_log(msg: str):
     migration_progress["logs"].append(msg)
-    if len(migration_progress["logs"]) > 100:
+    if len(migration_progress["logs"]) > 150:
         migration_progress["logs"].pop(0)
 
 def run_migration_task():
@@ -84,7 +84,7 @@ def run_migration_task():
         else:
             resources_to_upload = []
 
-        add_log(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर {len(resources_to_upload)} इमेजेस S3 पर अपलोड हो रही हैं...")
+        add_log(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर कुल {len(resources_to_upload)} इमेजेस S3 पर अपलोड हो रही हैं...")
         
         s3_uploaded_urls = []
         for i, res in enumerate(resources_to_upload):
@@ -92,19 +92,29 @@ def run_migration_task():
             public_id = res["public_id"]
             format_ext = res["format"]
             filename = f"{public_id.replace('/', '_')}.{format_ext}"
-            try:
-                resp = requests.get(img_url, timeout=10)
-                if resp.status_code == 200:
-                    img_data = io.BytesIO(resp.content)
-                    s3_key = f"migrated_images/{filename}"
-                    s3_client.upload_fileobj(img_data, BUCKET_NAME, s3_key, ExtraArgs={"ContentType": "image/*"})
-                    new_s3_url = f"https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{s3_key}"
-                    s3_uploaded_urls.append(new_s3_url)
-                    
-                    if (i + 1) % 10 == 0 or (i + 1) == len(resources_to_upload):
-                        add_log(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)})")
-            except Exception:
-                continue
+            
+            success = False
+            for attempt in range(3): # अगर एक बार फेल हो तो 3 बार कोशिश करेगा
+                try:
+                    resp = requests.get(img_url, timeout=15)
+                    if resp.status_code == 200:
+                        img_data = io.BytesIO(resp.content)
+                        s3_key = f"migrated_images/{filename}"
+                        s3_client.upload_fileobj(img_data, BUCKET_NAME, s3_key, ExtraArgs={"ContentType": "image/*"})
+                        new_s3_url = f"https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{s3_key}"
+                        s3_uploaded_urls.append(new_s3_url)
+                        success = True
+                        break
+                except Exception:
+                    time_val = attempt + 1
+                    import time
+                    time.sleep(1)
+            
+            if success:
+                if (i + 1) % 5 == 0 or (i + 1) == len(resources_to_upload):
+                    add_log(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)})")
+            else:
+                add_log(f"⚠️ स्किप किया गया (Fail): {filename}")
 
         add_log("🔍 DynamoDB से कोलकाता लोकेशन की लिस्टिंग्स जांची जा रही हैं...")
         response = table.scan()
@@ -161,7 +171,7 @@ def run_migration_task():
                 ExpressionAttributeValues={":new_images": new_images}
             )
             updated_count += 1
-            add_log(f"✨ Updated ID: {property_id}")
+            add_log(f"✨ Updated Property ID: {property_id}")
 
         migration_progress["status"] = "Completed"
         add_log(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स अपडेट कर दी गई हैं।")
