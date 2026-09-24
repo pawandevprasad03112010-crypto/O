@@ -1,11 +1,12 @@
 import io
 import asyncio
+import json
 import boto3
 import cloudinary
 import cloudinary.api
 import cloudinary.uploader
 import requests
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
@@ -13,14 +14,14 @@ from fastapi import Request
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# --- 1. आपकी नई क्लाउडिनेरी कॉन्फ़िगरेशन ---
+# Cloudinary Configuration
 cloudinary.config(
     cloud_name="pfmjg7ip",
     api_key="368463435529631",
     api_secret="6u7lnfIRo4ikkXSR_GM2ziUtStM"
 )
 
-# --- 2. AWS & DynamoDB कॉन्फ़िगरेशन ---
+# AWS & DynamoDB Configuration
 AWS_ACCESS_KEY_ID = "AKIA32VVAONMU6L6OLU3"
 AWS_SECRET_ACCESS_KEY = "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"
 REGION = "ap-south-1"
@@ -46,14 +47,44 @@ dynamodb = boto3.resource(
 )
 table = dynamodb.Table(TABLE_NAME)
 
-# माइग्रेशन स्टेटस ट्रैक करने के लिए
-migration_status = {"status": "Idle", "message": "स्टार्ट बटन दबाने की प्रतीक्षा है..."}
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
 
-def run_migration_task():
-    global migration_status
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.get("/", response_class=HTMLResponse)
+def read_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
     try:
-        migration_status["status"] = "Running"
-        migration_status["message"] = "क्लाउडिनेरी से इमेजेस फेच की जा रही हैं..."
+        while True:
+            data = await websocket.receive_text()
+            if data == "start":
+                asyncio.create_task(run_migration(manager))
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+async def run_migration(mgr: ConnectionManager):
+    try:
+        await mgr.broadcast("🔄 क्लाउडिनेरी से सभी इमेजेस फेच की जा रही हैं...")
         
         resources = []
         next_cursor = None
@@ -75,10 +106,10 @@ def run_migration_task():
         else:
             resources_to_upload = []
 
-        migration_status["message"] = f"कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर {len(resources_to_upload)} इमेजेस S3 पर अपलोड हो रही हैं..."
+        await mgr.broadcast(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर {len(resources_to_upload)} इमेजेस S3 पर अपलोड होना शुरू हो रही हैं...")
         
         s3_uploaded_urls = []
-        for res in resources_to_upload:
+        for i, res in enumerate(resources_to_upload):
             img_url = res["secure_url"]
             public_id = res["public_id"]
             format_ext = res["format"]
@@ -91,10 +122,14 @@ def run_migration_task():
                     s3_client.upload_fileobj(img_data, BUCKET_NAME, s3_key, ExtraArgs={"ContentType": "image/*"})
                     new_s3_url = f"https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{s3_key}"
                     s3_uploaded_urls.append(new_s3_url)
-            except Exception:
+                    
+                    # Live screen par dikhane ke liye
+                    if (i + 1) % 5 == 0 or (i + 1) == len(resources_to_upload):
+                        await mgr.broadcast(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)}): {new_s3_url}")
+            except Exception as e:
                 continue
 
-        migration_status["message"] = "DynamoDB से कोलकाता लिस्टिंग्स जांची जा रही हैं..."
+        await mgr.broadcast("🔍 DynamoDB से कोलकाता लोकेशन की लिस्टिंग्स जांची जा रही हैं...")
         response = table.scan()
         items = response.get("Items", [])
         while "LastEvaluatedKey" in response:
@@ -108,6 +143,8 @@ def run_migration_task():
             sub_loc = str(loc.get("sub_locality", "")).lower()
             if "kolkata" in city or "kolkata" in sub_loc:
                 kolkata_items.append(item)
+
+        await mgr.broadcast(f"📍 कोलकाता की कुल {len(kolkata_items)} लिस्टिंग्स मिलीं। अब नियम चेक करके अपडेट कर रहे हैं...")
 
         url_index = 0
         updated_count = 0
@@ -123,6 +160,7 @@ def run_migration_task():
                 continue
 
             if url_index >= total_s3_urls:
+                await mgr.broadcast("⚠️ सभी नई S3 इमेजेस समाप्त हो चुकी हैं।")
                 break
 
             batch_size = 5
@@ -146,26 +184,10 @@ def run_migration_task():
                 ExpressionAttributeValues={":new_images": new_images}
             )
             updated_count += 1
+            await mgr.broadcast(f"✨ Updated Property ID: {property_id} (5 S3 URLs added)")
 
-        migration_status["status"] = "Completed"
-        migration_status["message"] = f"प्रक्रिया सफल! कुल {updated_count} कोलकाता लिस्टिंग्स अपडेट कर दी गई हैं।"
+        await mgr.broadcast(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स को अपडेट कर दिया गया है।")
 
     except Exception as e:
-        migration_status["status"] = "Error"
-        migration_status["message"] = f"त्रुटि आई: {str(e)}"
-
-@app.get("/", response_class=HTMLResponse)
-def read_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/api/start-migration")
-def start_migration(background_tasks: BackgroundTasks):
-    if migration_status["status"] == "Running":
-        return {"status": "Already Running", "message": "माइग्रेशन पहले से चल रहा है..."}
-    background_tasks.add_task(run_migration_task)
-    return {"status": "Started", "message": "माइग्रेशन बैकग्राउंड में शुरू हो चुका है!"}
-
-@app.get("/api/status")
-def get_status():
-    return migration_status
-
+        await mgr.broadcast(f"❌ एरर आ गया: {str(e)}")
+        
