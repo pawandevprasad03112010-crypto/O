@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastAPI S3 & Cloudinary Migrator</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #eef2f7; text-align: center; padding: 50px; }
+        .card { background: white; max-width: 600px; margin: auto; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { color: #333; }
+        button { background: #28a745; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 20px; }
+        button:hover { background: #218838; }
+        .status-box { margin-top: 25px; padding: 15px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>FastAPI इमेज माइग्रेशन टूल</h2>
+    <p>कोलकाता लिस्टिंग्स को तेज़ी से अपडेट करने के लिए नीचे दिए गए बटन पर क्लिक करें।</p>
+    
+    <button id="startBtn">स्टार्ट करें (Start Migration)</button>
+    
+    <div class="status-box" id="statusBox">स्थिति: तैयार (Idle)</div>
+</div>
+
+<script>
+    const startBtn = document.getElementById('startBtn');
+    const statusBox = document.getElementById('statusBox');
+
+    startBtn.onclick = function() {
+        startBtn.disabled = true;
+        startBtn.style.background = '#6c757d';
+        statusBox.textContent = "स्थिति: अनुरोध भेजा जा रहा है...";
+
+        fetch('/api/start-migration', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                statusBox.textContent = "स्थिति: " + data.message;
+                pollStatus();
+            })
+            .catch(err => {
+                statusBox.textContent = "एरर आ गया: " + err;
+                startBtn.disabled = false;
+                startBtn.style.background = '#28a745';
+            });
+    };
+
+    function pollStatus() {
+        const interval = setInterval(() => {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    statusBox.textContent = "स्थिति (" + data.status + "): " + data.message;
+                    if (data.status === 'Completed' || data.status === 'Error') {
+                        clearInterval(interval);
+                        startBtn.disabled = false;
+                        startBtn.style.background = '#28a745';
+                    }
+                });
+        }, 3000);
+    }
+</script>
+
+</body>
+</html>
+
