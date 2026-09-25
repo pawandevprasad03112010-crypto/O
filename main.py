@@ -29,7 +29,7 @@ TABLE_NAME = "BUY_PROPERTY"
 PRIMARY_KEY = "property_id"
 
 DEFAULT_URL = "https://property-images-estatex-1.s3.ap-south-1.amazonaws.com/photo_1790242568046_001.png"
-SKIP_LAST_N_IMAGES = 1200
+SKIP_LAST_N_IMAGES = 0  # सभी इमेजेस लेने के लिए इसे 0 किया गया है
 
 s3_client = boto3.client(
     "s3",
@@ -79,22 +79,22 @@ def run_migration_task():
         resources.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         total_fetched = len(resources)
         
-        if total_fetched > SKIP_LAST_N_IMAGES:
+        if SKIP_LAST_N_IMAGES > 0 and total_fetched > SKIP_LAST_N_IMAGES:
             resources_to_upload = resources[:-SKIP_LAST_N_IMAGES]
         else:
-            resources_to_upload = []
+            resources_to_upload = resources
 
-        add_log(f"📦 कुल {total_fetched} में से आखिरी {SKIP_LAST_N_IMAGES} छोड़कर कुल {len(resources_to_upload)} इमेजेस S3 पर अपलोड हो रही हैं...")
+        add_log(f"📦 कुल {total_fetched} इमेजेस S3 पर अपलोड हो रही हैं...")
         
         s3_uploaded_urls = []
         for i, res in enumerate(resources_to_upload):
-            img_url = res["secure_url"]
-            public_id = res["public_id"]
-            format_ext = res["format"]
-            filename = f"{public_id.replace('/', '_')}.{format_ext}"
+            img_url = res.get("secure_url")
+            public_id = res.get("public_id")
+            format_ext = res.get("format", "jpg")
+            filename = f"{str(public_id).replace('/', '_')}.{format_ext}"
             
             success = False
-            for attempt in range(3): # अगर एक बार फेल हो तो 3 बार कोशिश करेगा
+            for attempt in range(3):
                 try:
                     resp = requests.get(img_url, timeout=15)
                     if resp.status_code == 200:
@@ -106,12 +106,11 @@ def run_migration_task():
                         success = True
                         break
                 except Exception:
-                    time_val = attempt + 1
                     import time
                     time.sleep(1)
             
             if success:
-                if (i + 1) % 5 == 0 or (i + 1) == len(resources_to_upload):
+                if (i + 1) % 10 == 0 or (i + 1) == len(resources_to_upload):
                     add_log(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)})")
             else:
                 add_log(f"⚠️ स्किप किया गया (Fail): {filename}")
@@ -125,11 +124,12 @@ def run_migration_task():
 
         kolkata_items = []
         for item in items:
-            loc = item.get("location", {})
-            city = str(loc.get("city", "")).lower()
-            sub_loc = str(loc.get("sub_locality", "")).lower()
-            if "kolkata" in city or "kolkata" in sub_loc:
-                kolkata_items.append(item)
+            loc = item.get("location")
+            if isinstance(loc, dict):
+                city = str(loc.get("city", "")).lower()
+                sub_loc = str(loc.get("sub_locality", "")).lower()
+                if "kolkata" in city or "kolkata" in sub_loc:
+                    kolkata_items.append(item)
 
         add_log(f"📍 कोलकाता की कुल {len(kolkata_items)} लिस्टिंग्स मिलीं। अपडेट जारी है...")
 
@@ -140,11 +140,7 @@ def run_migration_task():
         for item in kolkata_items:
             property_id = item.get(PRIMARY_KEY)
             media = item.get("media", {})
-            images = media.get("images", [])
-
-            default_url_count = images.count(DEFAULT_URL)
-            if default_url_count < 2:
-                continue
+            images = media.get("images", []) if isinstance(media, dict) else []
 
             if url_index >= total_s3_urls:
                 add_log("⚠️ सभी नई S3 इमेजेस समाप्त हो चुकी हैं।")
@@ -164,6 +160,9 @@ def run_migration_task():
                     continue
                 else:
                     new_images.append(img)
+            
+            if not target_replaced:
+                new_images.extend(new_batch)
 
             table.update_item(
                 Key={PRIMARY_KEY: property_id},
@@ -171,7 +170,7 @@ def run_migration_task():
                 ExpressionAttributeValues={":new_images": new_images}
             )
             updated_count += 1
-            add_log(f"✨ Updated Property ID: {property_id}")
+            add_log(f"✨ Updated Property ID: {property_id} (इमेजेस जोड़ी गईं: {len(new_batch)})")
 
         migration_progress["status"] = "Completed"
         add_log(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स अपडेट कर दी गई हैं।")
@@ -194,4 +193,4 @@ def start_migration(background_tasks: BackgroundTasks):
 @app.get("/api/logs")
 def get_logs():
     return migration_progress
-    
+            
