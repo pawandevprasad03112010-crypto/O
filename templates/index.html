@@ -1,66 +1,81 @@
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stable Migrator</title>
+    <title>Ultimate 99acres Broker Scraper</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f7f6; text-align: center; padding: 30px; }
-        .card { background: white; max-width: 800px; margin: auto; padding: 25px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        button { background: #28a745; color: white; border: none; padding: 15px 35px; font-size: 18px; border-radius: 5px; cursor: pointer; margin-top: 15px; }
-        button:hover { background: #218838; }
-        #logBox { margin-top: 20px; height: 350px; background: #1e1e1e; color: #00ff00; text-align: left; padding: 15px; border-radius: 5px; overflow-y: scroll; font-family: monospace; font-size: 13px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h2 { color: #2c3e50; text-align: center; margin-bottom: 25px; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px; }
+        .full-width { grid-column: span 2; }
+        label { font-weight: bold; font-size: 14px; margin-bottom: 5px; display: block; color: #555; }
+        input[type="text"], select { width: 100%; padding: 12px; font-size: 15px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { grid-column: span 2; padding: 12px; background-color: #e74c3c; color: white; border: none; font-size: 16px; font-weight: bold; border-radius: 5px; cursor: pointer; transition: background 0.3s; }
+        button:hover { background-color: #c0392b; }
+        .error { color: #721c24; background: #f8d7da; border: 1px solid #f5c6cb; padding: 12px; border-radius: 5px; margin-bottom: 20px; }
+        .listing-box { background: #fafafa; border-left: 5px solid #27ae60; padding: 15px; margin-bottom: 15px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        pre { background: #1e1e1e; color: #dcdcdc; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 13px; }
     </style>
 </head>
 <body>
+    <div class="container">
+        <h2>Ultimate 99acres Dual-Engine Broker Scraper</h2>
+        <form method="POST">
+            <div class="form-grid">
+                <div class="full-width">
+                    <label>Location (City / Area):</label>
+                    <input type="text" name="location" placeholder="e.g., Gurgaon, Noida, Mumbai" value="{{ form.location }}" required>
+                </div>
+                
+                <div>
+                    <label>Listing Type:</label>
+                    <select name="listing_type">
+                        <option value="buy" {% if form.listing_type == 'buy' %}selected{% endif %}>Buy Property</option>
+                        <option value="rent" {% if form.listing_type == 'rent' %}selected{% endif %}>Rent / Lease</option>
+                        <option value="pg" {% if form.listing_type == 'pg' %}selected{% endif %}>PG / Co-living</option>
+                    </select>
+                </div>
 
-<div class="card">
-    <h2>इमेज माइग्रेशन और अपडेट टूल</h2>
-    <p>स्टार्ट बटन दबाने के बाद नीचे कंसोल में लाइव प्रोग्रेस दिखेगी।</p>
-    
-    <button id="startBtn">स्टार्ट माइग्रेशन (Start)</button>
-    
-    <div id="logBox">[SYSTEM] तैयार है। स्टार्ट बटन दबाएं...</div>
-</div>
+                <div>
+                    <label>Property Category:</label>
+                    <select name="prop_type">
+                        <option value="residential" {% if form.prop_type == 'residential' %}selected{% endif %}>Residential</option>
+                        <option value="commercial" {% if form.prop_type == 'commercial' %}selected{% endif %}>Commercial</option>
+                    </select>
+                </div>
 
-<script>
-    const startBtn = document.getElementById('startBtn');
-    const logBox = document.getElementById('logBox');
-    let pollInterval;
+                <div class="full-width">
+                    <label>BHK Selection:</label>
+                    <select name="bhk">
+                        <option value="all" {% if form.bhk == 'all' %}selected{% endif %}>All BHK / Any</option>
+                        <option value="1" {% if form.bhk == '1' %}selected{% endif %}>1 BHK</option>
+                        <option value="2" {% if form.bhk == '2' %}selected{% endif %}>2 BHK</option>
+                        <option value="3" {% if form.bhk == '3' %}selected{% endif %}>3 BHK</option>
+                        <option value="4" {% if form.bhk == '4' %}selected{% endif %}>4+ BHK</option>
+                    </select>
+                </div>
 
-    startBtn.onclick = function() {
-        startBtn.disabled = true;
-        startBtn.style.background = '#6c757d';
-        startBtn.textContent = "प्रक्रिया जारी है...";
+                <button type="submit">Scrap Broker Listings</button>
+            </div>
+        </form>
 
-        fetch('/api/start', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                pollInterval = setInterval(fetchLogs, 2000); // Har 2 second mein logs fetch karega
-            })
-            .catch(err => {
-                alert("कनेक्शन एरर!");
-                startBtn.disabled = false;
-                startBtn.style.background = '#28a745';
-            });
-    };
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
 
-    function fetchLogs() {
-        fetch('/api/logs')
-            .then(res => res.json())
-            .then(data => {
-                logBox.innerHTML = data.logs.join('<br>');
-                logBox.scrollTop = logBox.scrollHeight;
-
-                if (data.status === 'Completed' || data.status === 'Error') {
-                    clearInterval(pollInterval);
-                    startBtn.disabled = false;
-                    startBtn.style.background = '#28a745';
-                    startBtn.textContent = "स्टार्ट माइग्रेशन (Start)";
-                }
-            });
-    }
-</script>
-
+        {% if listings %}
+            <h3>Results (Broker Listings Only):</h3>
+            {% for item in listings %}
+                <div class="listing-box">
+                    <strong>{{ item.id }}. Listing JSON:</strong>
+                    <pre>{{ item | tojson(indent=4) }}</pre>
+                </div>
+            {% endfor %}
+        {% elif form.location and not error %}
+            <p style="text-align: center; color: #666;">No broker listings found matching your exact filters.</p>
+        {% endif %}
+    </div>
 </body>
 </html>
