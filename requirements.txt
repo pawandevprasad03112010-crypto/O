@@ -3,3 +3,4 @@ cloudscraper
 beautifulsoup4
 playwright
 gunicorn
+uvicorn
