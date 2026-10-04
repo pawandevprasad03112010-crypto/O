@@ -1,196 +1,127 @@
-import io
-import asyncio
-import boto3
-import cloudinary
-import cloudinary.api
-import cloudinary.uploader
-import requests
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from fastapi import Request
+import json
+import cloudscraper
+from bs4 import BeautifulSoup
+from flask import Flask, render_template, request
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+app = Flask(__name__)
 
-# Cloudinary Configuration
-cloudinary.config(
-    cloud_name="pfmjg7ip",
-    api_key="368463435529631",
-    api_secret="6u7lnfIRo4ikkXSR_GM2ziUtStM"
-)
-
-# AWS & DynamoDB Configuration
-AWS_ACCESS_KEY_ID = "AKIA32VVAONMU6L6OLU3"
-AWS_SECRET_ACCESS_KEY = "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"
-REGION = "ap-south-1"
-BUCKET_NAME = "property-images-estatex-1"
-TABLE_NAME = "BUY_PROPERTY"
-PRIMARY_KEY = "property_id"
-
-DEFAULT_URL = "https://property-images-estatex-1.s3.ap-south-1.amazonaws.com/photo_1790242568046_001.png"
-SKIP_LAST_N_IMAGES = 0  # सभी इमेजेस लेने के लिए इसे 0 किया गया है
-
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=REGION
-)
-
-dynamodb = boto3.resource(
-    "dynamodb",
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=REGION
-)
-table = dynamodb.Table(TABLE_NAME)
-
-migration_progress = {
-    "status": "Idle",
-    "logs": []
-}
-
-def add_log(msg: str):
-    migration_progress["logs"].append(msg)
-    if len(migration_progress["logs"]) > 150:
-        migration_progress["logs"].pop(0)
-
-def run_migration_task():
-    global migration_progress
-    migration_progress["status"] = "Running"
-    migration_progress["logs"] = []
-    
+def scrape_with_cloudscraper(url):
     try:
-        add_log("🔄 क्लाउडिनेरी से सभी इमेजेस फेच की जा रही हैं...")
-        
-        resources = []
-        next_cursor = None
-        while True:
-            options = {"max_results": 500}
-            if next_cursor:
-                options["next_cursor"] = next_cursor
-            result = cloudinary.api.resources(**options)
-            resources.extend(result.get("resources", []))
-            next_cursor = result.get("next_cursor")
-            if not next_cursor:
-                break
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+        )
+        response = scraper.get(url, timeout=25)
+        if response.status_code == 200:
+            return response.text
+    except Exception:
+        pass
+    return None
 
-        resources.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        total_fetched = len(resources)
-        
-        if SKIP_LAST_N_IMAGES > 0 and total_fetched > SKIP_LAST_N_IMAGES:
-            resources_to_upload = resources[:-SKIP_LAST_N_IMAGES]
-        else:
-            resources_to_upload = resources
-
-        add_log(f"📦 कुल {total_fetched} इमेजेस S3 पर अपलोड हो रही हैं...")
-        
-        s3_uploaded_urls = []
-        for i, res in enumerate(resources_to_upload):
-            img_url = res.get("secure_url")
-            public_id = res.get("public_id")
-            format_ext = res.get("format", "jpg")
-            filename = f"{str(public_id).replace('/', '_')}.{format_ext}"
-            
-            success = False
-            for attempt in range(3):
-                try:
-                    resp = requests.get(img_url, timeout=15)
-                    if resp.status_code == 200:
-                        img_data = io.BytesIO(resp.content)
-                        s3_key = f"migrated_images/{filename}"
-                        s3_client.upload_fileobj(img_data, BUCKET_NAME, s3_key, ExtraArgs={"ContentType": "image/*"})
-                        new_s3_url = f"https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{s3_key}"
-                        s3_uploaded_urls.append(new_s3_url)
-                        success = True
-                        break
-                except Exception:
-                    import time
-                    time.sleep(1)
-            
-            if success:
-                if (i + 1) % 10 == 0 or (i + 1) == len(resources_to_upload):
-                    add_log(f"✅ S3 Uploaded ({i+1}/{len(resources_to_upload)})")
-            else:
-                add_log(f"⚠️ स्किप किया गया (Fail): {filename}")
-
-        add_log("🔍 DynamoDB से कोलकाता लोकेशन की लिस्टिंग्स जांची जा रही हैं...")
-        response = table.scan()
-        items = response.get("Items", [])
-        while "LastEvaluatedKey" in response:
-            response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
-            items.extend(response.get("Items", []))
-
-        kolkata_items = []
-        for item in items:
-            loc = item.get("location")
-            if isinstance(loc, dict):
-                city = str(loc.get("city", "")).lower()
-                sub_loc = str(loc.get("sub_locality", "")).lower()
-                if "kolkata" in city or "kolkata" in sub_loc:
-                    kolkata_items.append(item)
-
-        add_log(f"📍 कोलकाता की कुल {len(kolkata_items)} लिस्टिंग्स मिलीं। अपडेट जारी है...")
-
-        url_index = 0
-        updated_count = 0
-        total_s3_urls = len(s3_uploaded_urls)
-
-        for item in kolkata_items:
-            property_id = item.get(PRIMARY_KEY)
-            media = item.get("media", {})
-            images = media.get("images", []) if isinstance(media, dict) else []
-
-            if url_index >= total_s3_urls:
-                add_log("⚠️ सभी नई S3 इमेजेस समाप्त हो चुकी हैं।")
-                break
-
-            batch_size = 5
-            new_batch = s3_uploaded_urls[url_index:url_index + batch_size]
-            url_index += len(new_batch)
-
-            new_images = []
-            target_replaced = False
-            for img in images:
-                if img == DEFAULT_URL and not target_replaced:
-                    new_images.extend(new_batch)
-                    target_replaced = True
-                elif img == DEFAULT_URL and target_replaced:
-                    continue
-                else:
-                    new_images.append(img)
-            
-            if not target_replaced:
-                new_images.extend(new_batch)
-
-            table.update_item(
-                Key={PRIMARY_KEY: property_id},
-                UpdateExpression="SET media.images = :new_images",
-                ExpressionAttributeValues={":new_images": new_images}
+def scrape_with_playwright(url):
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
             )
-            updated_count += 1
-            add_log(f"✨ Updated Property ID: {property_id} (इमेजेस जोड़ी गईं: {len(new_batch)})")
-
-        migration_progress["status"] = "Completed"
-        add_log(f"🎉 प्रक्रिया पूरी हो गई! कुल {updated_count} कोलकाता लिस्टिंग्स अपडेट कर दी गई हैं।")
-
+            page = context.new_page()
+            page.goto(url, timeout=40000)
+            page.wait_for_timeout(3000) # Wait for dynamic JS to load
+            html_content = page.content()
+            browser.close()
+            return html_content
     except Exception as e:
-        migration_progress["status"] = "Error"
-        add_log(f"❌ एरर आ गया: {str(e)}")
+        print(f"Playwright error: {e}")
+    return None
 
-@app.get("/", response_class=HTMLResponse)
-def read_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    listings_data = []
+    error_msg = ""
+    
+    form_data = {
+        "location": "",
+        "listing_type": "buy",
+        "prop_type": "residential",
+        "bhk": "all"
+    }
 
-@app.post("/api/start")
-def start_migration(background_tasks: BackgroundTasks):
-    if migration_progress["status"] == "Running":
-        return {"message": "पहले से चल रहा है..."}
-    background_tasks.add_task(run_migration_task)
-    return {"message": "शुरू हो गया!"}
+    if request.method == 'POST':
+        form_data["location"] = request.form.get('location', '').strip()
+        form_data["listing_type"] = request.form.get('listing_type', 'buy')
+        form_data["prop_type"] = request.form.get('prop_type', 'residential')
+        form_data["bhk"] = request.form.get('bhk', 'all')
 
-@app.get("/api/logs")
-def get_logs():
-    return migration_progress
+        if form_data["location"]:
+            loc_slug = form_data["location"].lower().replace(" ", "-")
+            base_url = "https://www.99acres.com/"
             
+            if form_data["listing_type"] == "pg":
+                url = f"{base_url}pg-in-{loc_slug}-ffid"
+            else:
+                bhk_part = f"{form_data['bhk']}-bhk-" if form_data['bhk'] != "all" else ""
+                url = f"{base_url}{bhk_part}property-in-{loc_slug}-ffid?preference={form_data['listing_type']}"
+
+            # Step 1: Try Cloudscraper first (Fast)
+            html_text = scrape_with_cloudscraper(url)
+            
+            # Step 2: Fallback to Playwright if Cloudscraper fails or gets blocked
+            if not html_text:
+                print("Cloudscraper blocked/failed. Switching to Playwright engine...")
+                html_text = scrape_with_playwright(url)
+
+            if html_text:
+                soup = BeautifulSoup(html_text, 'html.parser')
+                script_tag = soup.find('script', id='__NEXT_DATA__')
+                
+                if script_tag:
+                    try:
+                        json_data = json.loads(script_tag.string)
+                        props = json_data.get('props', {}).get('pageProps', {})
+                        results = props.get('searchResult', {}).get('propertyResults', [])
+                        
+                        if not results:
+                            results = props.get('initialData', {}).get('propertyResults', [])
+
+                        count = 1
+                        for item in results:
+                            title = item.get('heading', item.get('propertyTitle', 'N/A'))
+                            price = item.get('priceLabel', item.get('price', 'N/A'))
+                            posted_by = item.get('postedBy', item.get('dealerName', 'Broker / Agent'))
+                            user_type = str(item.get('userType', '')).lower()
+                            
+                            # Filter: Keep only Brokers, skip Owners
+                            if 'owner' in user_type or 'owner' in str(posted_by).lower():
+                                continue
+                            
+                            prop_nature = str(item.get('propertyType', '')).lower()
+                            if form_data["prop_type"] == "commercial" and "residential" in prop_nature:
+                                continue
+                            elif form_data["prop_type"] == "residential" and "commercial" in prop_nature:
+                                continue
+
+                            listing_obj = {
+                                "id": count,
+                                "title": title,
+                                "price": price,
+                                "posted_by": posted_by,
+                                "listing_type": form_data["listing_type"].upper(),
+                                "category": form_data["prop_type"].capitalize(),
+                                "phone_number": "Protected by 99acres (Requires Subscription)"
+                            }
+                            listings_data.append(listing_obj)
+                            count += 1
+                    except Exception as parse_e:
+                        error_msg = f"Data parsing error: {str(parse_e)}"
+                else:
+                    error_msg = "Could not locate JSON state (__NEXT_DATA__). Anti-bot wall might be active."
+            else:
+                error_msg = "Both engines (Cloudscraper & Playwright) failed to fetch data from 99acres."
+
+    return render_template('index.html', listings=listings_data, form=form_data, error=error_msg)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+    
